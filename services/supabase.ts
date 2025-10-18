@@ -24,7 +24,6 @@ export const uploadFile = async (file: File, path: string): Promise<UploadResult
 
     if (error) {
         console.error('Error al subir el archivo:', error);
-        alert(`Error al subir el archivo a Supabase: ${error.message}`);
         return { path: null, error: new Error(error.message) };
     }
 

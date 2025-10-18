@@ -182,7 +182,8 @@ const FloatingDraftButtons: React.FC<{onSave: () => void, onLoad: () => void, di
 
 const App: React.FC = () => {
     const [formData, setFormData] = useState<FormData>(initialFormData);
-    const [isLoading, setIsLoading] = useState(false);
+    const [isDownloading, setIsDownloading] = useState(false);
+    const [isUploading, setIsUploading] = useState(false);
     const [statusMessage, setStatusMessage] = useState('');
     const [activeTab, setActiveTab] = useState('minister');
 
@@ -265,14 +266,61 @@ const App: React.FC = () => {
         }
     };
 
-    const handleSubmit = async (e: React.FormEvent) => {
+    const handleDownload = async () => {
+        if (!formData.minister.fullName) {
+            alert('El nombre completo del ministro es obligatorio para nombrar los archivos.');
+            setActiveTab('minister');
+            return;
+        }
+        setIsDownloading(true);
+        setStatusMessage('Generando PDF y Excel para descargar...');
+        try {
+            const filenameBase = formData.minister.fullName.replace(/\s+/g, '_');
+            
+            // Generar y descargar PDF
+            const pdfBlob = await generatePdf(formData);
+            const pdfUrl = URL.createObjectURL(pdfBlob);
+            const pdfLink = document.createElement('a');
+            pdfLink.href = pdfUrl;
+            pdfLink.download = `${filenameBase}.pdf`;
+            document.body.appendChild(pdfLink);
+            pdfLink.click();
+            document.body.removeChild(pdfLink);
+            URL.revokeObjectURL(pdfUrl);
+
+            // Generar y descargar Excel
+            const excelBlob = generateExcel(formData);
+            const excelUrl = URL.createObjectURL(excelBlob);
+            const excelLink = document.createElement('a');
+            excelLink.href = excelUrl;
+            excelLink.download = `${filenameBase}.xlsx`;
+            document.body.appendChild(excelLink);
+            excelLink.click();
+            document.body.removeChild(excelLink);
+            URL.revokeObjectURL(excelUrl);
+
+            setStatusMessage('Documentos listos.');
+            alert('Documentos descargados exitosamente.');
+
+        } catch (error: any) {
+            console.error("Error al descargar:", error);
+            setStatusMessage(`Error al generar: ${error.message}`);
+            alert('Ocurrió un error al generar los documentos.');
+        } finally {
+            setIsDownloading(false);
+        }
+    };
+
+
+    const handleUpload = async (e: React.FormEvent) => {
         e.preventDefault();
         if (!formData.minister.fullName) {
             alert('El nombre completo del ministro es obligatorio.');
+            setActiveTab('minister');
             return;
         }
-        setIsLoading(true);
-        setStatusMessage('Iniciando proceso...');
+        setIsUploading(true);
+        setStatusMessage('Iniciando proceso de envío...');
         try {
             setStatusMessage('Generando PDF...');
             const pdfBlob = await generatePdf(formData);
@@ -283,7 +331,7 @@ const App: React.FC = () => {
             const pdfFile = new File([pdfBlob], `${filenameBase}.pdf`, { type: 'application/pdf' });
             const excelFile = new File([excelBlob], `${filenameBase}.xlsx`, { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
 
-            setStatusMessage('Subiendo documentos y fotos...');
+            setStatusMessage('Subiendo documentos y fotos a Supabase...');
             const uploads = [
                 uploadFile(pdfFile, `documents/${pdfFile.name}`),
                 uploadFile(excelFile, `documents/${excelFile.name}`)
@@ -292,15 +340,27 @@ const App: React.FC = () => {
             if (formData.wife.photo) uploads.push(uploadFile(formData.wife.photo, `photos/wife_${filenameBase}.jpg`));
 
             const results = await Promise.all(uploads);
-            if (results.some(r => r.error)) throw new Error('Fallaron una o más cargas de archivos. Revisa la configuración de Supabase.');
+            
+            const firstErrorResult = results.find(r => r.error);
+            if (firstErrorResult && firstErrorResult.error) {
+                throw firstErrorResult.error;
+            }
             
             setStatusMessage('¡Proceso completado con éxito!');
-            alert('¡Ficha Ministerial enviada y guardada exitosamente!');
+            alert('¡Ficha Ministerial enviada y guardada exitosamente en Supabase!');
         } catch (error: any) {
-            setStatusMessage(`Error: ${error.message}`);
-            alert(`Ocurrió un error: ${error.message}`);
+            const errorMessage = error.message || 'Error desconocido.';
+            setStatusMessage(`Error: ${errorMessage}`);
+            
+            let alertMessage = `Ocurrió un error al enviar: ${errorMessage}`;
+
+            if (errorMessage.includes('violates row-level security policy')) {
+                alertMessage = 'Error de Permisos en Supabase:\n\nNo se pudieron subir los archivos porque la política de seguridad de la base de datos lo impidió.\n\nSolución: Ve a tu panel de Supabase > Storage > Policies y crea una nueva política para la operación "INSERT" que aplique al rol "public" para el bucket "fichas-ministeriales".';
+            }
+
+            alert(alertMessage);
         } finally {
-            setIsLoading(false);
+            setIsUploading(false);
         }
     };
     
@@ -463,7 +523,7 @@ const App: React.FC = () => {
                 </header>
             </div>
 
-            <form onSubmit={handleSubmit}>
+            <form onSubmit={handleUpload}>
                 <div className="bg-brand-blue rounded-t-lg shadow-lg">
                     <nav className="flex flex-wrap p-1">
                         <TabButton title="Ministro" isActive={activeTab === 'minister'} onClick={() => setActiveTab('minister')} icon="fa-user-tie"/>
@@ -479,17 +539,22 @@ const App: React.FC = () => {
                     {renderContent()}
                 </div>
 
-                <div className="bg-white p-6 rounded-lg shadow-md mt-6">
-                    <button type="submit" disabled={isLoading} className="w-full bg-green-600 text-white font-bold py-3 px-4 rounded-lg hover:bg-green-700 transition duration-300 disabled:bg-green-400">
-                        {isLoading ? `Procesando: ${statusMessage}` : 'Generar Documentos y Enviar'}
-                    </button>
-                    {isLoading && <div className="w-full bg-blue-100 p-3 mt-4 rounded-md text-center text-blue-800">
+                <div className="bg-white p-6 rounded-lg shadow-md mt-6 space-y-4">
+                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                        <button type="button" onClick={handleDownload} disabled={isDownloading || isUploading} className="w-full bg-brand-blue text-white font-bold py-3 px-4 rounded-lg hover:bg-brand-light-blue transition duration-300 disabled:bg-blue-300 flex items-center justify-center">
+                           {isDownloading ? <><i className="fas fa-spinner fa-spin mr-2"></i>Generando...</> : <><i className="fas fa-download mr-2"></i>Descargar (PDF/Excel)</>}
+                        </button>
+                        <button type="submit" disabled={isUploading || isDownloading} className="w-full bg-green-600 text-white font-bold py-3 px-4 rounded-lg hover:bg-green-700 transition duration-300 disabled:bg-green-400 flex items-center justify-center">
+                           {isUploading ? <><i className="fas fa-spinner fa-spin mr-2"></i>Enviando...</> : <><i className="fas fa-cloud-upload-alt mr-2"></i>Enviar a Supabase</>}
+                        </button>
+                    </div>
+                    {(isUploading || isDownloading) && <div className="w-full bg-blue-100 p-3 rounded-md text-center text-blue-800">
                         <i className="fas fa-spinner fa-spin mr-2"></i>
                         {statusMessage}
                     </div>}
                 </div>
             </form>
-            <FloatingDraftButtons onSave={handleSaveDraft} onLoad={handleLoadDraft} disabled={isLoading} />
+            <FloatingDraftButtons onSave={handleSaveDraft} onLoad={handleLoadDraft} disabled={isUploading || isDownloading} />
         </div>
     );
 };
