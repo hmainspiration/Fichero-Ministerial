@@ -126,40 +126,49 @@ const DateDropdownPicker: React.FC<{ label: string; name: string; value: string;
             setMonth(m);
             setYear(y);
         } else {
-            setDay('');
-            setMonth('');
-            setYear('');
+            if (day || month || year) {
+                setDay('');
+                setMonth('');
+                setYear('');
+            }
         }
     }, [value]);
-    
-    useEffect(() => {
-        if (day && month && year) {
-            const dateString = `${day}/${month}/${year}`;
-            if(dateString !== value) {
-                onChange({ target: { name, value: dateString } });
+
+    const getDaysInMonth = (y: string, m: string): number => {
+        if (!y || !m) return 31;
+        return new Date(Number(y), Number(m), 0).getDate();
+    };
+
+    const handleDateChange = (part: 'day' | 'month' | 'year', newValue: string) => {
+        let newDay = part === 'day' ? newValue : day;
+        let newMonth = part === 'month' ? newValue : month;
+        let newYear = part === 'year' ? newValue : year;
+
+        if (part === 'month' || part === 'year') {
+            const maxDays = getDaysInMonth(newYear, newMonth);
+            if (Number(newDay) > maxDays) {
+                newDay = String(maxDays);
+            }
+        }
+        
+        setDay(newDay);
+        setMonth(newMonth);
+        setYear(newYear);
+
+        if (newDay && newMonth && newYear) {
+            const newDateString = `${newDay}/${newMonth}/${newYear}`;
+            if (newDateString !== value) {
+                onChange({ target: { name, value: newDateString } });
             }
         } else if (value) {
-            // Si el valor no está vacío pero los selectores sí, lo limpiamos.
             onChange({ target: { name, value: '' } });
         }
-    }, [day, month, year, name, onChange, value]);
+    };
 
     const currentYear = new Date().getFullYear();
     const years = Array.from({ length: 101 }, (_, i) => currentYear - i);
     const months = Array.from({ length: 12 }, (_, i) => String(i + 1).padStart(2, '0'));
-    
-    const daysInMonth = useMemo(() => {
-        if (!month || !year) return 31;
-        return new Date(Number(year), Number(month), 0).getDate();
-    }, [month, year]);
-
-    useEffect(() => {
-        if (Number(day) > daysInMonth) {
-            setDay(String(daysInMonth));
-        }
-    }, [day, daysInMonth]);
-
-    const days = Array.from({ length: daysInMonth }, (_, i) => String(i + 1).padStart(2, '0'));
+    const days = Array.from({ length: getDaysInMonth(year, month) }, (_, i) => String(i + 1).padStart(2, '0'));
     
     const selectClasses = `w-full px-3 py-2 border rounded-md shadow-sm focus:outline-none transition-colors ${error ? 'border-red-500 ring-1 ring-red-500' : 'border-gray-300 focus:ring-indigo-500 focus:border-indigo-500'}`;
 
@@ -167,15 +176,15 @@ const DateDropdownPicker: React.FC<{ label: string; name: string; value: string;
          <div className="mb-4">
             <label className="block text-sm font-medium text-gray-700 mb-1">{label}{required && <span className="text-red-500">*</span>}</label>
             <div className="grid grid-cols-3 gap-2">
-                <select name={`${name}-day`} value={day} onChange={e => setDay(e.target.value)} className={selectClasses} aria-label={`${label} día`}>
+                <select name={`${name}-day`} value={day} onChange={e => handleDateChange('day', e.target.value)} className={selectClasses} aria-label={`${label} día`}>
                     <option value="">Día</option>
                     {days.map(d => <option key={d} value={d}>{d}</option>)}
                 </select>
-                <select name={`${name}-month`} value={month} onChange={e => setMonth(e.target.value)} className={selectClasses} aria-label={`${label} mes`}>
+                <select name={`${name}-month`} value={month} onChange={e => handleDateChange('month', e.target.value)} className={selectClasses} aria-label={`${label} mes`}>
                     <option value="">Mes</option>
                     {months.map(m => <option key={m} value={m}>{m}</option>)}
                 </select>
-                 <select name={`${name}-year`} value={year} onChange={e => setYear(e.target.value)} className={selectClasses} aria-label={`${label} año`}>
+                 <select name={`${name}-year`} value={year} onChange={e => handleDateChange('year', e.target.value)} className={selectClasses} aria-label={`${label} año`}>
                     <option value="">Año</option>
                     {years.map(y => <option key={y} value={y}>{y}</option>)}
                 </select>
@@ -534,9 +543,9 @@ const AppContent: React.FC = () => {
     const renderContent = () => {
         switch (activeTab) {
             case 'minister':
-                return <PersonDetails person={formData.minister} onChange={handlePersonChange('minister')} onPhotoChange={handlePhotoChange('minister')} personType="minister" errors={formErrors.minister || {}} />;
+                return <PersonDetails key="minister" person={formData.minister} onChange={handlePersonChange('minister')} onPhotoChange={handlePhotoChange('minister')} personType="minister" errors={formErrors.minister || {}} />;
             case 'wife':
-                return <PersonDetails person={formData.wife} onChange={handlePersonChange('wife')} onPhotoChange={handlePhotoChange('wife')} personType="wife" errors={formErrors.wife || {}} />;
+                return <PersonDetails key="wife" person={formData.wife} onChange={handlePersonChange('wife')} onPhotoChange={handlePhotoChange('wife')} personType="wife" errors={formErrors.wife || {}} />;
             case 'ministry':
                  return (
                     <div>
