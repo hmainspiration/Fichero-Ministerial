@@ -1,10 +1,83 @@
-import React, { useState, useCallback, useEffect, useRef } from 'react';
+import React, { useState, useCallback, useEffect, useRef, createContext, useContext, useMemo } from 'react';
 import type { FormData, PersonInfo, ChildInfo, ChurchRecord, MinistryInfo, DisciplineInfo } from './types';
 import { initialFormData, createInitialChild, createInitialChurchRecord, MAX_PHOTO_SIZE_MB, MAX_PHOTO_SIZE_BYTES } from './constants';
 import { uploadFile, saveDraftToSupabase, loadDraftFromSupabase } from './services/supabase';
 import { generatePdf, generateExcel } from './services/fileGenerators';
 
-// --- Reusable Components ---
+// --- Sistema de Notificaciones Toast ---
+
+type ToastType = 'success' | 'error' | 'info';
+
+interface Toast {
+    id: number;
+    message: string;
+    type: ToastType;
+}
+
+interface ToastContextType {
+    addToast: (message: string, type?: ToastType) => void;
+}
+
+const ToastContext = createContext<ToastContextType | null>(null);
+
+const useToast = () => {
+    const context = useContext(ToastContext);
+    if (!context) throw new Error("useToast debe ser usado dentro de un ToastProvider");
+    return context;
+};
+
+const ToastMessage: React.FC<{ toast: Toast; onDismiss: (id: number) => void }> = ({ toast, onDismiss }) => {
+    const icons = {
+        success: 'fa-check-circle',
+        error: 'fa-times-circle',
+        info: 'fa-info-circle',
+    };
+    const colors = {
+        success: 'bg-green-500',
+        error: 'bg-red-500',
+        info: 'bg-blue-500',
+    };
+
+    return (
+        <div className={`flex items-start p-4 mb-4 text-white rounded-lg shadow-lg ${colors[toast.type]} animate-fade-in-right`}>
+            <i className={`fas ${icons[toast.type]} mr-3 text-xl`}></i>
+            <p className="flex-1 text-sm font-medium">{toast.message}</p>
+            <button onClick={() => onDismiss(toast.id)} className="ml-4 -mt-1 -mr-1 text-xl font-bold leading-none opacity-70 hover:opacity-100">&times;</button>
+        </div>
+    );
+};
+
+const ToastContainer: React.FC<{ toasts: Toast[]; onDismiss: (id: number) => void }> = ({ toasts, onDismiss }) => (
+    <div className="fixed top-5 right-5 z-[100] w-full max-w-xs">
+        {toasts.map(toast => (
+            <ToastMessage key={toast.id} toast={toast} onDismiss={onDismiss} />
+        ))}
+    </div>
+);
+
+const ToastProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+    const [toasts, setToasts] = useState<Toast[]>([]);
+
+    const removeToast = useCallback((id: number) => {
+        setToasts(prev => prev.filter(toast => toast.id !== id));
+    }, []);
+
+    const addToast = useCallback((message: string, type: ToastType = 'info') => {
+        const id = Date.now() + Math.random();
+        setToasts(prev => [...prev, { id, message, type }]);
+        setTimeout(() => removeToast(id), 6000); // Duración de 6 segundos
+    }, [removeToast]);
+
+    return (
+        <ToastContext.Provider value={{ addToast }}>
+            {children}
+            <ToastContainer toasts={toasts} onDismiss={removeToast}/>
+        </ToastContext.Provider>
+    );
+};
+
+
+// --- Componentes Reutilizables ---
 
 const TabButton: React.FC<{ title: string; isActive: boolean; onClick: () => void; icon: string }> = ({ title, isActive, onClick, icon }) => (
     <button
@@ -22,12 +95,96 @@ const TabButton: React.FC<{ title: string; isActive: boolean; onClick: () => voi
 );
 
 
-const InputField: React.FC<{ label: string; name: string; value: string | number; onChange: (e: React.ChangeEvent<HTMLInputElement>) => void; type?: string; placeholder?: string; required?: boolean }> = ({ label, name, value, onChange, type = 'text', placeholder, required = false }) => (
+const InputField: React.FC<{ label: string; name: string; value: string | number; onChange: (e: React.ChangeEvent<HTMLInputElement>) => void; type?: string; placeholder?: string; required?: boolean; error?: string; }> = ({ label, name, value, onChange, type = 'text', placeholder, required = false, error }) => (
     <div className="mb-4">
         <label htmlFor={name} className="block text-sm font-medium text-gray-700 mb-1">{label}{required && <span className="text-red-500">*</span>}</label>
-        <input type={type} id={name} name={name} value={value} onChange={onChange} placeholder={placeholder || label} required={required} className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500" />
+        <input 
+            type={type} 
+            id={name} 
+            name={name} 
+            value={value} 
+            onChange={onChange}
+            placeholder={placeholder || label} 
+            required={required} 
+            className={`w-full px-3 py-2 border rounded-md shadow-sm focus:outline-none transition-colors ${error ? 'border-red-500 ring-1 ring-red-500' : 'border-gray-300 focus:ring-indigo-500 focus:border-indigo-500'}`} 
+            aria-invalid={!!error}
+            aria-describedby={error ? `${name}-error` : undefined}
+        />
+        {error && <p id={`${name}-error`} className="mt-1 text-xs text-red-600">{error}</p>}
     </div>
 );
+
+const DateDropdownPicker: React.FC<{ label: string; name: string; value: string; onChange: (e: { target: { name: string; value: string; } }) => void; error?: string; required?: boolean; }> = ({ label, name, value, onChange, error, required }) => {
+    const [day, setDay] = useState('');
+    const [month, setMonth] = useState('');
+    const [year, setYear] = useState('');
+
+    useEffect(() => {
+        if (value && /^\d{2}\/\d{2}\/\d{4}$/.test(value)) {
+            const [d, m, y] = value.split('/');
+            setDay(d);
+            setMonth(m);
+            setYear(y);
+        } else {
+            setDay('');
+            setMonth('');
+            setYear('');
+        }
+    }, [value]);
+    
+    useEffect(() => {
+        if (day && month && year) {
+            const dateString = `${day}/${month}/${year}`;
+            if(dateString !== value) {
+                onChange({ target: { name, value: dateString } });
+            }
+        } else if (value) {
+            // Si el valor no está vacío pero los selectores sí, lo limpiamos.
+            onChange({ target: { name, value: '' } });
+        }
+    }, [day, month, year, name, onChange, value]);
+
+    const currentYear = new Date().getFullYear();
+    const years = Array.from({ length: 101 }, (_, i) => currentYear - i);
+    const months = Array.from({ length: 12 }, (_, i) => String(i + 1).padStart(2, '0'));
+    
+    const daysInMonth = useMemo(() => {
+        if (!month || !year) return 31;
+        return new Date(Number(year), Number(month), 0).getDate();
+    }, [month, year]);
+
+    useEffect(() => {
+        if (Number(day) > daysInMonth) {
+            setDay(String(daysInMonth));
+        }
+    }, [day, daysInMonth]);
+
+    const days = Array.from({ length: daysInMonth }, (_, i) => String(i + 1).padStart(2, '0'));
+    
+    const selectClasses = `w-full px-3 py-2 border rounded-md shadow-sm focus:outline-none transition-colors ${error ? 'border-red-500 ring-1 ring-red-500' : 'border-gray-300 focus:ring-indigo-500 focus:border-indigo-500'}`;
+
+    return (
+         <div className="mb-4">
+            <label className="block text-sm font-medium text-gray-700 mb-1">{label}{required && <span className="text-red-500">*</span>}</label>
+            <div className="grid grid-cols-3 gap-2">
+                <select name={`${name}-day`} value={day} onChange={e => setDay(e.target.value)} className={selectClasses} aria-label={`${label} día`}>
+                    <option value="">Día</option>
+                    {days.map(d => <option key={d} value={d}>{d}</option>)}
+                </select>
+                <select name={`${name}-month`} value={month} onChange={e => setMonth(e.target.value)} className={selectClasses} aria-label={`${label} mes`}>
+                    <option value="">Mes</option>
+                    {months.map(m => <option key={m} value={m}>{m}</option>)}
+                </select>
+                 <select name={`${name}-year`} value={year} onChange={e => setYear(e.target.value)} className={selectClasses} aria-label={`${label} año`}>
+                    <option value="">Año</option>
+                    {years.map(y => <option key={y} value={y}>{y}</option>)}
+                </select>
+            </div>
+            {error && <p className="mt-1 text-xs text-red-600">{error}</p>}
+        </div>
+    );
+};
+
 
 const RadioGroup: React.FC<{ label: string; name: string; value: string; onChange: (e: React.ChangeEvent<HTMLInputElement>) => void; options: string[] }> = ({ label, name, value, onChange, options }) => (
     <div className="mb-4">
@@ -53,12 +210,13 @@ const CheckboxField: React.FC<{ label: string; name: string; checked: boolean; o
 
 const PhotoUpload: React.FC<{ label: string; person: PersonInfo; onPhotoChange: (photo: File | null, preview: string) => void; }> = ({ label, person, onPhotoChange }) => {
     const fileInputRef = useRef<HTMLInputElement>(null);
+    const { addToast } = useToast();
 
     const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
         const file = e.target.files?.[0] || null;
         if (file) {
             if (file.size > MAX_PHOTO_SIZE_BYTES) {
-                alert(`El archivo es demasiado grande. El tamaño máximo es de ${MAX_PHOTO_SIZE_MB}MB.`);
+                addToast(`El archivo es demasiado grande. El tamaño máximo es de ${MAX_PHOTO_SIZE_MB}MB.`, 'error');
                 return;
             }
             const reader = new FileReader();
@@ -94,13 +252,13 @@ const PhotoUpload: React.FC<{ label: string; person: PersonInfo; onPhotoChange: 
 };
 
 
-const PersonDetails: React.FC<{ person: PersonInfo; onChange: (e: React.ChangeEvent<HTMLInputElement>) => void; onPhotoChange: (photo: File | null, preview: string) => void; personType: 'minister' | 'wife' }> = ({ person, onChange, onPhotoChange, personType }) => (
+const PersonDetails: React.FC<{ person: PersonInfo; onChange: (e: React.ChangeEvent<HTMLInputElement> | { target: { name: string; value: string; } }) => void; onPhotoChange: (photo: File | null, preview: string) => void; personType: 'minister' | 'wife'; errors: Record<string, string> }> = ({ person, onChange, onPhotoChange, personType, errors }) => (
      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
         <div className="md:col-span-3 lg:col-span-2 space-y-4">
             <h2 className="text-2xl font-bold text-gray-800 border-b pb-2 mb-4">Información del {personType === 'minister' ? 'Ministro' : 'Cónyuge'}</h2>
             <InputField label="Nombre Completo (Según Cédula)" name="fullName" value={person.fullName} onChange={onChange} required />
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <InputField label="Fecha de Nacimiento (DD/MM/AAAA)" name="birthDate" value={person.birthDate} onChange={onChange} placeholder="01/01/1980" />
+                <DateDropdownPicker label="Fecha de Nacimiento" name="birthDate" value={person.birthDate} onChange={onChange} error={errors.birthDate} />
                 <InputField label="Ciudad" name="city" value={person.city} onChange={onChange} />
                 <InputField label="Departamento" name="department" value={person.department} onChange={onChange} />
                 <InputField label="País" name="country" value={person.country} onChange={onChange} />
@@ -108,10 +266,10 @@ const PersonDetails: React.FC<{ person: PersonInfo; onChange: (e: React.ChangeEv
              <fieldset className="border p-4 rounded-md">
                 <legend className="text-sm font-medium text-gray-700 px-2">Información Eclesiástica</legend>
                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                    <InputField label="Fecha de Bautismo" name="baptismDate" value={person.baptismDate} onChange={onChange} />
+                    <DateDropdownPicker label="Fecha de Bautismo" name="baptismDate" value={person.baptismDate} onChange={onChange} error={errors.baptismDate} />
                     <InputField label="Iglesia (Bautismo)" name="baptismChurch" value={person.baptismChurch} onChange={onChange} />
                     <InputField label="Quien Bautizo" name="baptizedBy" value={person.baptizedBy} onChange={onChange} />
-                    <InputField label="Fecha de Bautismo Espiritual" name="spiritualDate" value={person.spiritualDate} onChange={onChange} />
+                    <DateDropdownPicker label="Fecha de Bautismo Espiritual" name="spiritualDate" value={person.spiritualDate} onChange={onChange} error={errors.spiritualDate} />
                     <InputField label="Iglesia (Espiritual)" name="spiritualChurch" value={person.spiritualChurch} onChange={onChange} />
                     <InputField label="Quien Testifico" name="testifiedBy" value={person.testifiedBy} onChange={onChange} />
                 </div>
@@ -121,7 +279,7 @@ const PersonDetails: React.FC<{ person: PersonInfo; onChange: (e: React.ChangeEv
                     <legend className="text-sm font-medium text-gray-700 px-2">Matrimonio</legend>
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                         <RadioGroup label="Se caso por la Iglesia" name="churchMarried" value={person.churchMarried} onChange={onChange} options={['Sí', 'No', 'Unión Libre']} />
-                        <InputField label="Fecha de Matrimonio" name="marriageDate" value={person.marriageDate} onChange={onChange} />
+                        <DateDropdownPicker label="Fecha de Matrimonio" name="marriageDate" value={person.marriageDate} onChange={onChange} error={errors.marriageDate} />
                         <InputField label="Quien los Caso" name="marriedBy" value={person.marriedBy} onChange={onChange} />
                         <InputField label="Iglesia" name="marriageChurch" value={person.marriageChurch} onChange={onChange} />
                     </div>
@@ -130,7 +288,7 @@ const PersonDetails: React.FC<{ person: PersonInfo; onChange: (e: React.ChangeEv
             <fieldset className="border p-4 rounded-md">
                 <legend className="text-sm font-medium text-gray-700 px-2">Inicio Obra</legend>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                    <InputField label="Fecha que Salió a la Obra" name="workStartDate" value={person.workStartDate} onChange={onChange} />
+                    <DateDropdownPicker label="Fecha que Salió a la Obra" name="workStartDate" value={person.workStartDate} onChange={onChange} error={errors.workStartDate} />
                     <InputField label="Lugar donde salió" name="whereStarted" value={person.whereStarted} onChange={onChange} />
                     <InputField label="Salió Soltero o Casado" name="singleOrMarried" value={person.singleOrMarried} onChange={onChange} />
                     <InputField label="Ministro que lo recomendó" name="recommendedBy" value={person.recommendedBy} onChange={onChange} />
@@ -153,12 +311,12 @@ const PersonDetails: React.FC<{ person: PersonInfo; onChange: (e: React.ChangeEv
                 <legend className="text-sm font-medium text-gray-700 px-2">Documentación y Salud</legend>
                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                     <RadioGroup label="Posee Visa" name="hasVisa" value={person.hasVisa} onChange={onChange} options={['Sí', 'No']} />
-                    <InputField label="Vigente (Visa)" name="visaVigente" value={person.visaVigente} onChange={onChange} placeholder="DD/MM/AAAA"/>
+                    <DateDropdownPicker label="Vigente (Visa)" name="visaVigente" value={person.visaVigente} onChange={onChange} error={errors.visaVigente} />
                     <RadioGroup label="Posee Residencia" name="hasResidency" value={person.hasResidency} onChange={onChange} options={['Sí', 'No']} />
-                    <InputField label="Vigente (Residencia)" name="residencyVigente" value={person.residencyVigente} onChange={onChange} placeholder="DD/MM/AAAA"/>
+                    <DateDropdownPicker label="Vigente (Residencia)" name="residencyVigente" value={person.residencyVigente} onChange={onChange} error={errors.residencyVigente} />
                     <RadioGroup label="Enfermedad" name="illness" value={person.illness} onChange={onChange} options={['Sí', 'No']} />
                     <InputField label="Tipo de Enfermedad" name="illnessType" value={person.illnessType} onChange={onChange} />
-                    <InputField label="Desde Cuando" name="illnessSince" value={person.illnessSince} onChange={onChange} placeholder="DD/MM/AAAA"/>
+                    <DateDropdownPicker label="Desde Cuando" name="illnessSince" value={person.illnessSince} onChange={onChange} error={errors.illnessSince} />
                     <RadioGroup label="Está en Tratamiento" name="inTreatment" value={person.inTreatment} onChange={onChange} options={['Sí', 'No']} />
                 </div>
             </fieldset>
@@ -169,21 +327,21 @@ const PersonDetails: React.FC<{ person: PersonInfo; onChange: (e: React.ChangeEv
     </div>
 );
 
-// --- Componente Principal ---
 
-const App: React.FC = () => {
+// --- Lógica Principal de la Aplicación ---
+
+const AppContent: React.FC = () => {
     const [formData, setFormData] = useState<FormData>(initialFormData);
-    const [isDownloading, setIsDownloading] = useState(false);
-    const [isUploading, setIsUploading] = useState(false);
+    const [isProcessing, setIsProcessing] = useState(false);
     const [isDraftLoading, setIsDraftLoading] = useState(false);
-    const [statusMessage, setStatusMessage] = useState('');
     const [activeTab, setActiveTab] = useState('minister');
     const [isFabMenuOpen, setIsFabMenuOpen] = useState(false);
     const [draftId, setDraftId] = useState<string | null>(null);
-    const [draftSaveStatus, setDraftSaveStatus] = useState<{ message: string; timestamp: string | null }>({ message: '', timestamp: null });
+    const { addToast } = useToast();
+    const [formErrors, setFormErrors] = useState<any>({});
+
 
     useEffect(() => {
-        // Generar o recuperar el ID de borrador único del usuario
         let id = localStorage.getItem('ministerialDraftId');
         if (!id) {
             id = crypto.randomUUID();
@@ -192,8 +350,13 @@ const App: React.FC = () => {
         setDraftId(id);
     }, []);
 
-    const handlePersonChange = useCallback((personKey: 'minister' | 'wife') => (e: React.ChangeEvent<HTMLInputElement>) => {
+    const handlePersonChange = useCallback((personKey: 'minister' | 'wife') => (e: React.ChangeEvent<HTMLInputElement> | { target: { name: string; value: string; } }) => {
         const { name, value } = e.target;
+        setFormErrors(prev => {
+            const newErrors = {...prev};
+            if(newErrors[personKey]) delete newErrors[personKey][name];
+            return newErrors;
+        });
         setFormData(prev => ({ ...prev, [personKey]: { ...prev[personKey], [name]: value } }));
     }, []);
 
@@ -201,14 +364,14 @@ const App: React.FC = () => {
         setFormData(prev => ({ ...prev, [personKey]: { ...prev[personKey], photo, photoPreview: preview } }));
     }, []);
     
-    const handleSimpleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const handleSimpleChange = (e: React.ChangeEvent<HTMLInputElement> | { target: { name: string; value: string; } }) => {
         const { name, value } = e.target;
         setFormData(prev => ({ ...prev, [name]: value }));
     };
 
-    const handleNestedChange = useCallback((section: 'ministry' | 'discipline') => (e: React.ChangeEvent<HTMLInputElement>) => {
-        const { name, value, type, checked } = e.target;
-        const finalValue = type === 'checkbox' ? checked : value;
+    const handleNestedChange = useCallback((section: 'ministry' | 'discipline') => (e: React.ChangeEvent<HTMLInputElement> | { target: { name: string; value: string; } }) => {
+        const { name, value } = e.target;
+        const finalValue = (e.target as HTMLInputElement).type === 'checkbox' ? (e.target as HTMLInputElement).checked : value;
         setFormData(prev => ({ ...prev, [section]: { ...prev[section], [name]: finalValue } }));
     }, []);
 
@@ -240,32 +403,37 @@ const App: React.FC = () => {
         setFormData(prev => ({ ...prev, churchRecords: newRecords }));
     }, [formData.churchRecordsCount, formData.churchRecords]);
 
+    const validateForm = (): boolean => {
+        // La validación de fechas ya no es necesaria aquí,
+        // ya que el DateDropdownPicker previene fechas inválidas.
+        // Se pueden agregar otras validaciones si es necesario.
+        if (!formData.minister.fullName) {
+             addToast('El nombre completo del ministro es obligatorio.', 'error');
+             setActiveTab('minister');
+             return false;
+        }
+        return true;
+    };
+
     const handleSaveDraft = async () => {
         if (!draftId) {
-            alert('No se pudo generar un ID para el borrador. Intente recargar la página.');
+            addToast('No se pudo generar un ID para el borrador. Intente recargar la página.', 'error');
             return;
         }
         setIsDraftLoading(true);
         try {
             const draftData = JSON.parse(JSON.stringify(formData));
-            // No guardamos las fotos en el JSON, solo las vistas previas.
             delete draftData.minister.photo;
             delete draftData.wife.photo;
             
             const { error } = await saveDraftToSupabase(draftId, draftData);
             if (error) throw error;
             
-            const now = new Date();
-            setDraftSaveStatus({ 
-                message: 'Borrador guardado exitosamente en la nube',
-                timestamp: now.toLocaleString('es-ES', { day: '2-digit', month: 'long', year: 'numeric', hour: '2-digit', minute: '2-digit' })
-            });
-
+            addToast('Borrador guardado exitosamente en la nube', 'success');
             setIsFabMenuOpen(false);
         } catch (error) {
-            console.error(error);
-            alert(`No se pudo guardar el borrador en la nube: ${error instanceof Error ? error.message : 'Error desconocido'}`);
-            setDraftSaveStatus({ message: 'Error al guardar el borrador.', timestamp: null });
+            const message = `No se pudo guardar el borrador: ${error instanceof Error ? error.message : 'Error desconocido'}`;
+            addToast(message, 'error');
         } finally {
             setIsDraftLoading(false);
         }
@@ -273,7 +441,7 @@ const App: React.FC = () => {
 
     const handleLoadDraft = async () => {
         if (!draftId) {
-            alert('No se pudo encontrar un ID de borrador. Intente recargar la página.');
+            addToast('No se pudo encontrar un ID de borrador. Intente recargar la página.', 'error');
             return;
         }
         setIsDraftLoading(true);
@@ -282,144 +450,97 @@ const App: React.FC = () => {
             if (error) throw error;
 
             if (data) {
-                // Restauramos el borrador pero reseteamos las fotos.
                 data.minister.photo = null;
                 data.wife.photo = null;
                 setFormData(data);
-                alert('Borrador cargado desde la nube. Recuerda volver a seleccionar las fotos si es necesario.');
-                setDraftSaveStatus({ 
-                    message: 'Borrador cargado desde la nube',
-                    timestamp: new Date().toLocaleString('es-ES', { day: '2-digit', month: 'long', year: 'numeric', hour: '2-digit', minute: '2-digit' })
-                });
+                addToast('Borrador cargado desde la nube. Recuerda volver a seleccionar las fotos.', 'success');
                 setIsFabMenuOpen(false);
             } else {
-                alert('No se encontró ningún borrador en la nube para este dispositivo.');
-                 setDraftSaveStatus({ message: 'No se encontró un borrador remoto.', timestamp: null });
+                addToast('No se encontró ningún borrador en la nube para este dispositivo.', 'info');
             }
         } catch(error) {
-            console.error(error);
-            alert(`Error al cargar el borrador: ${error instanceof Error ? error.message : 'Error desconocido'}`);
-            setDraftSaveStatus({ message: 'Error al cargar el borrador.', timestamp: null });
+            addToast(`Error al cargar el borrador: ${error instanceof Error ? error.message : 'Error desconocido'}`, 'error');
         } finally {
             setIsDraftLoading(false);
         }
     };
 
-    const handleDownload = async () => {
-        if (!formData.minister.fullName) {
-            alert('El nombre completo del ministro es obligatorio para nombrar los archivos.');
-            setActiveTab('minister');
+    const handleAction = async (action: 'download' | 'upload') => {
+        if (!validateForm()) {
             return;
         }
-        setIsDownloading(true);
-        setStatusMessage('Generando PDF y Excel para descargar...');
+        setIsProcessing(true);
         try {
             const filenameBase = formData.minister.fullName.replace(/\s+/g, '_');
-            
             const pdfBlob = await generatePdf(formData);
-            const pdfUrl = URL.createObjectURL(pdfBlob);
-            const pdfLink = document.createElement('a');
-            pdfLink.href = pdfUrl;
-            pdfLink.download = `${filenameBase}.pdf`;
-            document.body.appendChild(pdfLink);
-            pdfLink.click();
-            document.body.removeChild(pdfLink);
-            URL.revokeObjectURL(pdfUrl);
-
-            const excelBlob = generateExcel(formData);
-            const excelUrl = URL.createObjectURL(excelBlob);
-            const excelLink = document.createElement('a');
-            excelLink.href = excelUrl;
-            excelLink.download = `${filenameBase}.xlsx`;
-            document.body.appendChild(excelLink);
-            excelLink.click();
-            document.body.removeChild(excelLink);
-            URL.revokeObjectURL(excelUrl);
-
-            setStatusMessage('Documentos listos.');
-            alert('Documentos descargados exitosamente.');
-
-        } catch (error: any) {
-            console.error("Error al descargar:", error);
-            setStatusMessage(`Error al generar: ${error.message}`);
-            alert('Ocurrió un error al generar los documentos.');
-        } finally {
-            setIsDownloading(false);
-        }
-    };
-
-
-    const handleUpload = async (e: React.FormEvent) => {
-        e.preventDefault();
-        if (!formData.minister.fullName) {
-            alert('El nombre completo del ministro es obligatorio.');
-            setActiveTab('minister');
-            return;
-        }
-        setIsUploading(true);
-        setStatusMessage('Iniciando proceso de envío...');
-        try {
-            setStatusMessage('Generando PDF...');
-            const pdfBlob = await generatePdf(formData);
-            setStatusMessage('Generando Excel...');
             const excelBlob = generateExcel(formData);
 
-            const filenameBase = formData.minister.fullName.replace(/\s+/g, '_');
-            const pdfFile = new File([pdfBlob], `${filenameBase}.pdf`, { type: 'application/pdf' });
-            const excelFile = new File([excelBlob], `${filenameBase}.xlsx`, { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+            if (action === 'download') {
+                const pdfUrl = URL.createObjectURL(pdfBlob);
+                const pdfLink = document.createElement('a');
+                pdfLink.href = pdfUrl;
+                pdfLink.download = `${filenameBase}.pdf`;
+                document.body.appendChild(pdfLink);
+                pdfLink.click();
+                document.body.removeChild(pdfLink);
+                URL.revokeObjectURL(pdfUrl);
 
-            setStatusMessage('Subiendo documentos y fotos a Supabase...');
-            const uploads = [
-                uploadFile(pdfFile, `documents/${pdfFile.name}`),
-                uploadFile(excelFile, `documents/${excelFile.name}`)
-            ];
-            if (formData.minister.photo) uploads.push(uploadFile(formData.minister.photo, `photos/minister_${filenameBase}.jpg`));
-            if (formData.wife.photo) uploads.push(uploadFile(formData.wife.photo, `photos/wife_${filenameBase}.jpg`));
-
-            const results = await Promise.all(uploads);
-            
-            const firstErrorResult = results.find(r => r.error);
-            if (firstErrorResult && firstErrorResult.error) {
-                throw firstErrorResult.error;
+                const excelUrl = URL.createObjectURL(excelBlob);
+                const excelLink = document.createElement('a');
+                excelLink.href = excelUrl;
+                excelLink.download = `${filenameBase}.xlsx`;
+                document.body.appendChild(excelLink);
+                excelLink.click();
+                document.body.removeChild(excelLink);
+                URL.revokeObjectURL(excelUrl);
+                addToast('Documentos descargados exitosamente.', 'success');
+            } else { // upload
+                const pdfFile = new File([pdfBlob], `${filenameBase}.pdf`, { type: 'application/pdf' });
+                const excelFile = new File([excelBlob], `${filenameBase}.xlsx`, { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+    
+                const uploads = [
+                    uploadFile(pdfFile, `documents/${pdfFile.name}`),
+                    uploadFile(excelFile, `documents/${excelFile.name}`)
+                ];
+                if (formData.minister.photo) uploads.push(uploadFile(formData.minister.photo, `photos/minister_${filenameBase}.jpg`));
+                if (formData.wife.photo) uploads.push(uploadFile(formData.wife.photo, `photos/wife_${filenameBase}.jpg`));
+    
+                const results = await Promise.all(uploads);
+                const firstErrorResult = results.find(r => r.error);
+                if (firstErrorResult?.error) throw firstErrorResult.error;
+                
+                addToast('¡Ficha Ministerial enviada y guardada exitosamente!', 'success');
             }
-            
-            setStatusMessage('¡Proceso completado con éxito!');
-            alert('¡Ficha Ministerial enviada y guardada exitosamente en Supabase!');
         } catch (error: any) {
-            const errorMessage = error.message || 'Error desconocido.';
-            setStatusMessage(`Error: ${errorMessage}`);
-            
-            let alertMessage = `Ocurrió un error al enviar: ${errorMessage}`;
-
-            if (errorMessage.includes('violates row-level security policy')) {
-                alertMessage = 'Error de Permisos en Supabase:\n\nNo se pudieron subir los archivos porque la política de seguridad de la base de datos lo impidió.\n\nSolución: Ve a tu panel de Supabase > Storage > Policies y crea una nueva política para la operación "INSERT" que aplique al rol "public" para el bucket "fichas-ministeriales".';
+            let toastMessage = `Ocurrió un error: ${error.message || 'Error desconocido'}`;
+            if (action === 'upload' && error.message?.includes('violates row-level security policy')) {
+                toastMessage = 'Error de Permisos: No se pudo subir los archivos. Contacte al administrador.';
             }
-
-            alert(alertMessage);
+            addToast(toastMessage, 'error');
         } finally {
-            setIsUploading(false);
+            setIsProcessing(false);
         }
     };
     
     const renderContent = () => {
         switch (activeTab) {
             case 'minister':
-                return <PersonDetails person={formData.minister} onChange={handlePersonChange('minister')} onPhotoChange={handlePhotoChange('minister')} personType="minister" />;
+                return <PersonDetails person={formData.minister} onChange={handlePersonChange('minister')} onPhotoChange={handlePhotoChange('minister')} personType="minister" errors={formErrors.minister || {}} />;
             case 'wife':
-                return <PersonDetails person={formData.wife} onChange={handlePersonChange('wife')} onPhotoChange={handlePhotoChange('wife')} personType="wife" />;
+                return <PersonDetails person={formData.wife} onChange={handlePersonChange('wife')} onPhotoChange={handlePhotoChange('wife')} personType="wife" errors={formErrors.wife || {}} />;
             case 'ministry':
                  return (
                     <div>
                         <h2 className="text-2xl font-bold text-gray-800 border-b pb-2 mb-4">Información del Ministerio</h2>
                         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                            <InputField label="Fecha de Obrero Evangelista" name="evangelistWorkerDate" value={formData.ministry.evangelistWorkerDate} onChange={handleNestedChange('ministry')} />
-                            <InputField label="Fecha de Diacono Evangelista" name="evangelistDeaconDate" value={formData.ministry.evangelistDeaconDate} onChange={handleNestedChange('ministry')} />
-                            <InputField label="Fecha de Encargado Evangelista" name="evangelistInChargeDate" value={formData.ministry.evangelistInChargeDate} onChange={handleNestedChange('ministry')} />
-                            <InputField label="Fecha de Pastor Evangelista" name="evangelistPastorDate" value={formData.ministry.evangelistPastorDate} onChange={handleNestedChange('ministry')} />
+                            <DateDropdownPicker label="Fecha de Obrero Evangelista" name="evangelistWorkerDate" value={formData.ministry.evangelistWorkerDate} onChange={handleNestedChange('ministry')} error={formErrors.ministry?.evangelistWorkerDate} />
+                            <DateDropdownPicker label="Fecha de Diacono Evangelista" name="evangelistDeaconDate" value={formData.ministry.evangelistDeaconDate} onChange={handleNestedChange('ministry')} error={formErrors.ministry?.evangelistDeaconDate} />
+                            <DateDropdownPicker label="Fecha de Encargado Evangelista" name="evangelistInChargeDate" value={formData.ministry.evangelistInChargeDate} onChange={handleNestedChange('ministry')} error={formErrors.ministry?.evangelistInChargeDate} />
+                            <DateDropdownPicker label="Fecha de Pastor Evangelista" name="evangelistPastorDate" value={formData.ministry.evangelistPastorDate} onChange={handleNestedChange('ministry')} error={formErrors.ministry?.evangelistPastorDate} />
                             <InputField label="Cargo dentro del Ministerio" name="role" value={formData.ministry.role} onChange={handleNestedChange('ministry')} />
                             <InputField label="Ministerio que colabora" name="collaboration" value={formData.ministry.collaboration} onChange={handleNestedChange('ministry')} />
-                            <InputField label="Desde Cuando" name="sinceDate" value={formData.ministry.sinceDate} onChange={handleNestedChange('ministry')} />
-                            <InputField label="Cambio o Cesado de Ministerio" name="ministryChangeDate" value={formData.ministry.ministryChangeDate} onChange={handleNestedChange('ministry')} />
+                            <DateDropdownPicker label="Desde Cuando" name="sinceDate" value={formData.ministry.sinceDate} onChange={handleNestedChange('ministry')} error={formErrors.ministry?.sinceDate} />
+                            <DateDropdownPicker label="Cambio o Cesado de Ministerio" name="ministryChangeDate" value={formData.ministry.ministryChangeDate} onChange={handleNestedChange('ministry')} error={formErrors.ministry?.ministryChangeDate} />
                         </div>
                         <h3 className="text-lg font-semibold text-gray-800 mt-6 mb-3">Trabajo material realizado en la obra</h3>
                         <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
@@ -441,10 +562,10 @@ const App: React.FC = () => {
                          <RadioGroup label="Ha sido puesto en diciplina alguna vez" name="wasDisciplined" value={formData.discipline.wasDisciplined} onChange={handleNestedChange('discipline')} options={['Sí', 'No']} />
                          {formData.discipline.wasDisciplined === 'Sí' && (
                             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-4">
-                                <InputField label="En que Fecha" name="disciplineDate" value={formData.discipline.disciplineDate} onChange={handleNestedChange('discipline')} />
+                                <DateDropdownPicker label="En que Fecha" name="disciplineDate" value={formData.discipline.disciplineDate} onChange={handleNestedChange('discipline')} error={formErrors.discipline?.disciplineDate} />
                                 <InputField label="Tipo de Falta Cometida" name="faultType" value={formData.discipline.faultType} onChange={handleNestedChange('discipline')} />
                                 <InputField label="Pastor que Juzgo la Falta" name="judgingPastor" value={formData.discipline.judgingPastor} onChange={handleNestedChange('discipline')} />
-                                <RadioGroup label="Salió culpable o inocente" name="guilty" value={formData.discipline.guilty} onChange={handleNestedChange('discipline')} options={['Culpable', 'Inocente']} />
+                                <RadioGroup label="Salió culpable o inocente" name="guilty" value={formData.discipline.guilty} onChange={handleNestedChange('discipline')} options={['Culpable', 'Innocente']} />
                                 <RadioGroup label="Hubo testigos en el juicio" name="witnesses" value={formData.discipline.witnesses} onChange={handleNestedChange('discipline')} options={['Sí', 'No']} />
                                 <RadioGroup label="Fue recogido o suspendido" name="suspended" value={formData.discipline.suspended} onChange={handleNestedChange('discipline')} options={['Sí', 'No']} />
                                 <InputField label="Por cuanto tiempo" name="suspensionTime" value={formData.discipline.suspensionTime} onChange={handleNestedChange('discipline')} />
@@ -470,7 +591,7 @@ const App: React.FC = () => {
                                     <InputField label="Nombre Completo" name="fullName" value={child.fullName} onChange={e => {
                                         const newChildren = [...formData.children]; newChildren[index].fullName = e.target.value; setFormData(p => ({...p, children: newChildren}));
                                     }} />
-                                    <InputField label="Fecha de Nacimiento" name="birthDate" value={child.birthDate} onChange={e => {
+                                    <DateDropdownPicker label="Fecha de Nacimiento" name="birthDate" value={child.birthDate} error={formErrors.children?.[index]?.birthDate} onChange={e => {
                                         const newChildren = [...formData.children]; newChildren[index].birthDate = e.target.value; setFormData(p => ({...p, children: newChildren}));
                                     }} />
                                     <InputField label="Nivel Académico" name="academicLevel" value={child.academicLevel} onChange={e => {
@@ -485,9 +606,9 @@ const App: React.FC = () => {
                                     <InputField label="Tipo de Enfermedad" name="illnessType" value={child.illnessType} onChange={e => {
                                         const newChildren = [...formData.children]; newChildren[index].illnessType = e.target.value; setFormData(p => ({...p, children: newChildren}));
                                     }}/>
-                                    <InputField label="Desde Cuando" name="illnessSince" value={child.illnessSince} onChange={e => {
+                                    <DateDropdownPicker label="Desde Cuando" name="illnessSince" value={child.illnessSince} error={formErrors.children?.[index]?.illnessSince} onChange={e => {
                                         const newChildren = [...formData.children]; newChildren[index].illnessSince = e.target.value; setFormData(p => ({...p, children: newChildren}));
-                                    }}/>
+                                    }} />
                                     <RadioGroup label="Está en Tratamiento" name={`inTreatment-${child.id}`} value={child.inTreatment} onChange={e => {
                                         const newChildren = [...formData.children]; newChildren[index].inTreatment = e.target.value; setFormData(p => ({...p, children: newChildren}));
                                     }} options={['Sí', 'No']} />
@@ -511,10 +632,10 @@ const App: React.FC = () => {
                                     <InputField label="Lugar" name="location" value={record.location} onChange={e => {
                                         const newRecords = [...formData.churchRecords]; newRecords[index].location = e.target.value; setFormData(p => ({...p, churchRecords: newRecords}));
                                     }} />
-                                    <InputField label="Fecha de Llegada" name="arrivalDate" value={record.arrivalDate} onChange={e => {
+                                    <DateDropdownPicker label="Fecha de Llegada" name="arrivalDate" value={record.arrivalDate} error={formErrors.churchRecords?.[index]?.arrivalDate} onChange={e => {
                                         const newRecords = [...formData.churchRecords]; newRecords[index].arrivalDate = e.target.value; setFormData(p => ({...p, churchRecords: newRecords}));
                                     }} />
-                                    <InputField label="Fecha de Cambio" name="changedDate" value={record.changedDate} onChange={e => {
+                                    <DateDropdownPicker label="Fecha de Cambio" name="changedDate" value={record.changedDate} error={formErrors.churchRecords?.[index]?.changedDate} onChange={e => {
                                         const newRecords = [...formData.churchRecords]; newRecords[index].changedDate = e.target.value; setFormData(p => ({...p, churchRecords: newRecords}));
                                     }} />
                                     <InputField label="Miembros Recibidos" type="number" name="membersReceived" value={record.membersReceived} onChange={e => {
@@ -557,33 +678,25 @@ const App: React.FC = () => {
     return (
         <div className="max-w-5xl mx-auto p-4 sm:p-8 font-sans" onClick={() => { if(isFabMenuOpen) setIsFabMenuOpen(false); }}>
              <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" />
-            
-            {draftSaveStatus.timestamp && (
-                <div className="bg-green-100 border-l-4 border-green-500 text-green-700 p-4 rounded-lg mb-6 shadow-md" role="alert">
-                    <p className="font-bold">{draftSaveStatus.message}</p>
-                    <p>Último guardado: {draftSaveStatus.timestamp}</p>
-                </div>
-            )}
 
             <div className="bg-gradient-to-br from-indigo-500 to-purple-600 text-white p-8 rounded-xl shadow-2xl mb-8">
                 <header className="text-center">
                     <h1 className="text-4xl sm:text-5xl font-extrabold tracking-tight">Ficha Ministerial Digital</h1>
                     <p className="text-indigo-200 mt-2 text-lg">Edición 2025</p>
                 </header>
-                {/* Botones de Borrador para pantallas grandes */}
                 <div className="mt-6 hidden sm:flex flex-row justify-center gap-4">
                     <button 
                         type="button" 
                         onClick={handleSaveDraft} 
-                        disabled={isUploading || isDownloading || isDraftLoading} 
+                        disabled={isProcessing || isDraftLoading} 
                         className="bg-white/20 text-white font-semibold py-2 px-6 rounded-lg hover:bg-white/30 transition duration-300 disabled:opacity-50 flex items-center justify-center"
                     >
-                        {isDraftLoading && draftId ? <><i className="fas fa-spinner fa-spin mr-2"></i>Guardando...</> : <><i className="fas fa-cloud-upload-alt mr-2"></i> Guardar Borrador</>}
+                        {isDraftLoading ? <><i className="fas fa-spinner fa-spin mr-2"></i>Guardando...</> : <><i className="fas fa-cloud-upload-alt mr-2"></i> Guardar Borrador</>}
                     </button>
                     <button 
                         type="button" 
                         onClick={handleLoadDraft} 
-                        disabled={isUploading || isDownloading || isDraftLoading} 
+                        disabled={isProcessing || isDraftLoading} 
                         className="bg-white/20 text-white font-semibold py-2 px-6 rounded-lg hover:bg-white/30 transition duration-300 disabled:opacity-50 flex items-center justify-center"
                     >
                        {isDraftLoading ? <><i className="fas fa-spinner fa-spin mr-2"></i>Cargando...</> : <><i className="fas fa-cloud-download-alt mr-2"></i> Cargar Borrador</>}
@@ -591,7 +704,7 @@ const App: React.FC = () => {
                 </div>
             </div>
 
-            <form onSubmit={handleUpload}>
+            <form onSubmit={(e) => { e.preventDefault(); handleAction('upload'); }} noValidate>
                  <div className="bg-white p-4 sm:p-8 rounded-xl shadow-lg mb-6">
                     <nav className="flex flex-wrap gap-2 mb-8 p-2 bg-gray-100 rounded-xl">
                         <TabButton title="Ministro" isActive={activeTab === 'minister'} onClick={() => setActiveTab('minister')} icon="fa-user-tie"/>
@@ -606,24 +719,18 @@ const App: React.FC = () => {
 
                 <div className="bg-white p-6 rounded-xl shadow-lg mt-6 space-y-4">
                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                        <button type="button" onClick={handleDownload} disabled={isDownloading || isUploading} className="w-full bg-indigo-600 text-white font-bold py-3 px-4 rounded-lg hover:bg-indigo-700 transition duration-300 disabled:bg-indigo-300 flex items-center justify-center shadow-md">
-                           {isDownloading ? <><i className="fas fa-spinner fa-spin mr-2"></i>Generando...</> : <><i className="fas fa-download mr-2"></i>Descargar (PDF/Excel)</>}
+                        <button type="button" onClick={() => handleAction('download')} disabled={isProcessing} className="w-full bg-indigo-600 text-white font-bold py-3 px-4 rounded-lg hover:bg-indigo-700 transition duration-300 disabled:bg-indigo-300 flex items-center justify-center shadow-md">
+                           {isProcessing ? <><i className="fas fa-spinner fa-spin mr-2"></i>Procesando...</> : <><i className="fas fa-download mr-2"></i>Descargar (PDF/Excel)</>}
                         </button>
-                        <button type="submit" disabled={isUploading || isDownloading} className="w-full bg-green-600 text-white font-bold py-3 px-4 rounded-lg hover:bg-green-700 transition duration-300 disabled:bg-green-400 flex items-center justify-center shadow-md">
-                           {isUploading ? <><i className="fas fa-spinner fa-spin mr-2"></i>Enviando...</> : <><i className="fas fa-paper-plane mr-2"></i>Enviar Información</>}
+                        <button type="submit" disabled={isProcessing} className="w-full bg-green-600 text-white font-bold py-3 px-4 rounded-lg hover:bg-green-700 transition duration-300 disabled:bg-green-400 flex items-center justify-center shadow-md">
+                           {isProcessing ? <><i className="fas fa-spinner fa-spin mr-2"></i>Enviando...</> : <><i className="fas fa-paper-plane mr-2"></i>Enviar Información</>}
                         </button>
                     </div>
-                    {(isUploading || isDownloading) && <div className="w-full bg-blue-100 p-3 rounded-md text-center text-blue-800">
-                        <i className="fas fa-spinner fa-spin mr-2"></i>
-                        {statusMessage}
-                    </div>}
                 </div>
             </form>
 
-            {/* Botón Flotante (FAB) para pantallas pequeñas */}
             <div className="sm:hidden fixed bottom-6 right-6 z-50">
                 <div className="relative">
-                    {/* Botones de acción del FAB */}
                     <div className={`absolute bottom-16 right-0 flex flex-col items-center gap-2 transition-all duration-300 ${isFabMenuOpen ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-4 pointer-events-none'}`}>
                         <button type="button" onClick={handleLoadDraft} disabled={isDraftLoading} className="bg-white text-indigo-600 rounded-full p-3 shadow-lg flex items-center justify-center w-40 text-sm font-semibold disabled:opacity-50">
                             {isDraftLoading ? <><i className="fas fa-spinner fa-spin mr-2"></i>Cargando...</> : <><i className="fas fa-cloud-download-alt mr-2"></i> Cargar Borrador</>}
@@ -632,7 +739,6 @@ const App: React.FC = () => {
                              {isDraftLoading ? <><i className="fas fa-spinner fa-spin mr-2"></i>Guardando...</> : <><i className="fas fa-cloud-upload-alt mr-2"></i> Guardar Borrador</>}
                         </button>
                     </div>
-                    {/* Botón principal del FAB */}
                     <button
                         type="button"
                         onClick={(e) => { e.stopPropagation(); setIsFabMenuOpen(!isFabMenuOpen); }}
@@ -645,5 +751,12 @@ const App: React.FC = () => {
         </div>
     );
 };
+
+const App: React.FC = () => (
+    <ToastProvider>
+        <AppContent />
+    </ToastProvider>
+);
+
 
 export default App;
