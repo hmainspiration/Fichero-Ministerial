@@ -1,7 +1,7 @@
 import React, { useState, useCallback, useEffect, useRef } from 'react';
 import type { FormData, PersonInfo, ChildInfo, ChurchRecord, MinistryInfo, DisciplineInfo } from './types';
 import { initialFormData, createInitialChild, createInitialChurchRecord, MAX_PHOTO_SIZE_MB, MAX_PHOTO_SIZE_BYTES } from './constants';
-import { uploadFile } from './services/supabase';
+import { uploadFile, saveDraftToSupabase, loadDraftFromSupabase } from './services/supabase';
 import { generatePdf, generateExcel } from './services/fileGenerators';
 
 // --- Reusable Components ---
@@ -10,13 +10,13 @@ const TabButton: React.FC<{ title: string; isActive: boolean; onClick: () => voi
     <button
         type="button"
         onClick={onClick}
-        className={`flex-grow px-3 py-3 text-sm font-bold transition-all duration-300 flex items-center justify-center whitespace-nowrap sm:flex-grow-0 ${
+        className={`flex-grow px-4 py-3 text-sm font-bold transition-all duration-300 flex items-center justify-center rounded-lg whitespace-nowrap sm:flex-grow-0 ${
             isActive
-                ? 'bg-white text-brand-blue rounded-t-lg'
-                : 'text-blue-200 hover:bg-brand-light-blue hover:text-white'
+                ? 'bg-gradient-to-r from-purple-600 to-indigo-600 text-white shadow-lg'
+                : 'text-gray-500 hover:bg-gray-100'
         }`}
     >
-        <i className={`fas ${icon} mr-2 hidden sm:inline-block`}></i>
+        <i className={`fas ${icon} mr-2`}></i>
         <span>{title}</span>
     </button>
 );
@@ -25,7 +25,7 @@ const TabButton: React.FC<{ title: string; isActive: boolean; onClick: () => voi
 const InputField: React.FC<{ label: string; name: string; value: string | number; onChange: (e: React.ChangeEvent<HTMLInputElement>) => void; type?: string; placeholder?: string; required?: boolean }> = ({ label, name, value, onChange, type = 'text', placeholder, required = false }) => (
     <div className="mb-4">
         <label htmlFor={name} className="block text-sm font-medium text-gray-700 mb-1">{label}{required && <span className="text-red-500">*</span>}</label>
-        <input type={type} id={name} name={name} value={value} onChange={onChange} placeholder={placeholder || label} required={required} className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-brand-light-blue focus:border-brand-light-blue" />
+        <input type={type} id={name} name={name} value={value} onChange={onChange} placeholder={placeholder || label} required={required} className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500" />
     </div>
 );
 
@@ -35,7 +35,7 @@ const RadioGroup: React.FC<{ label: string; name: string; value: string; onChang
         <div className="flex items-center space-x-4 flex-wrap">
             {options.map(opt => (
                 <label key={opt} className="flex items-center mt-1">
-                    <input type="radio" name={name} value={opt} checked={value === opt} onChange={onChange} className="focus:ring-brand-light-blue h-4 w-4 text-brand-blue border-gray-300" />
+                    <input type="radio" name={name} value={opt} checked={value === opt} onChange={onChange} className="focus:ring-indigo-500 h-4 w-4 text-indigo-600 border-gray-300" />
                     <span className="ml-2 text-sm text-gray-700">{opt}</span>
                 </label>
             ))}
@@ -45,13 +45,15 @@ const RadioGroup: React.FC<{ label: string; name: string; value: string; onChang
 
 const CheckboxField: React.FC<{ label: string; name: string; checked: boolean; onChange: (e: React.ChangeEvent<HTMLInputElement>) => void; }> = ({ label, name, checked, onChange }) => (
     <div className="flex items-center p-2 bg-gray-50 rounded-lg">
-        <input id={name} name={name} type="checkbox" checked={checked} onChange={onChange} className="h-4 w-4 text-brand-blue border-gray-300 rounded focus:ring-brand-light-blue" />
+        <input id={name} name={name} type="checkbox" checked={checked} onChange={onChange} className="h-4 w-4 text-indigo-600 border-gray-300 rounded focus:ring-indigo-500" />
         <label htmlFor={name} className="ml-3 text-sm font-medium text-gray-700">{label}</label>
     </div>
 );
 
 
 const PhotoUpload: React.FC<{ label: string; person: PersonInfo; onPhotoChange: (photo: File | null, preview: string) => void; }> = ({ label, person, onPhotoChange }) => {
+    const fileInputRef = useRef<HTMLInputElement>(null);
+
     const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
         const file = e.target.files?.[0] || null;
         if (file) {
@@ -66,26 +68,36 @@ const PhotoUpload: React.FC<{ label: string; person: PersonInfo; onPhotoChange: 
             onPhotoChange(null, '');
         }
     };
+    
+    const triggerFileSelect = () => fileInputRef.current?.click();
 
     return (
         <div className="mb-4 text-center">
-            <label className="block text-sm font-medium text-gray-700 mb-2">{label}</label>
-            <div className="flex flex-col items-center">
+            <h3 className="font-semibold text-lg mb-4 text-brand-dark">{label}</h3>
+            <div 
+                className="w-48 h-60 mx-auto bg-gray-100 rounded-lg mb-2 flex items-center justify-center text-gray-500 border-2 border-dashed border-gray-300 cursor-pointer hover:border-indigo-500 hover:bg-gray-200 transition-all"
+                onClick={triggerFileSelect}
+            >
                 {person.photoPreview ? (
-                    <img src={person.photoPreview} alt="Vista previa" className="w-32 h-40 object-cover rounded-md mb-2 border-2 border-brand-light-blue" />
+                    <img src={person.photoPreview} alt="Vista previa" className="w-full h-full object-cover rounded-md" />
                 ) : (
-                    <div className="w-32 h-40 bg-gray-200 rounded-md mb-2 flex items-center justify-center text-gray-500">Foto</div>
+                    <div className="text-center">
+                        <i className="fas fa-camera text-3xl mb-2"></i>
+                        <p>Subir Foto</p>
+                        <p className="text-xs mt-1">(Máx. {MAX_PHOTO_SIZE_MB}MB)</p>
+                    </div>
                 )}
-                <input type="file" accept="image/*" onChange={handleFileChange} className="text-sm text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-brand-blue file:text-white hover:file:bg-brand-light-blue"/>
-                <p className="text-xs text-gray-500 mt-1">Máx. {MAX_PHOTO_SIZE_MB}MB</p>
             </div>
+            <input type="file" accept="image/*" ref={fileInputRef} onChange={handleFileChange} className="hidden"/>
         </div>
     );
 };
 
+
 const PersonDetails: React.FC<{ person: PersonInfo; onChange: (e: React.ChangeEvent<HTMLInputElement>) => void; onPhotoChange: (photo: File | null, preview: string) => void; personType: 'minister' | 'wife' }> = ({ person, onChange, onPhotoChange, personType }) => (
      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
         <div className="md:col-span-3 lg:col-span-2 space-y-4">
+            <h2 className="text-2xl font-bold text-gray-800 border-b pb-2 mb-4">Información del {personType === 'minister' ? 'Ministro' : 'Cónyuge'}</h2>
             <InputField label="Nombre Completo (Según Cédula)" name="fullName" value={person.fullName} onChange={onChange} required />
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <InputField label="Fecha de Nacimiento (DD/MM/AAAA)" name="birthDate" value={person.birthDate} onChange={onChange} placeholder="01/01/1980" />
@@ -157,35 +169,28 @@ const PersonDetails: React.FC<{ person: PersonInfo; onChange: (e: React.ChangeEv
     </div>
 );
 
-const FloatingDraftButtons: React.FC<{onSave: () => void, onLoad: () => void, disabled: boolean}> = ({ onSave, onLoad, disabled }) => {
-    const [isOpen, setIsOpen] = useState(false);
-    
-    return (
-        <div className="fixed bottom-6 right-6 z-50">
-            <div className={`flex flex-col items-center space-y-2 transition-all duration-300 ${isOpen ? 'opacity-100' : 'opacity-0 h-0 overflow-hidden'}`}>
-                 <button type="button" onClick={onLoad} disabled={disabled} className="bg-gray-500 text-white w-14 h-14 rounded-full shadow-lg hover:bg-gray-600 flex items-center justify-center transition disabled:bg-gray-300" title="Cargar Borrador">
-                    <i className="fas fa-upload"></i>
-                </button>
-                <button type="button" onClick={onSave} disabled={disabled} className="bg-yellow-500 text-white w-14 h-14 rounded-full shadow-lg hover:bg-yellow-600 flex items-center justify-center transition disabled:bg-yellow-300" title="Guardar Borrador">
-                    <i className="fas fa-save"></i>
-                </button>
-            </div>
-             <button type="button" onClick={() => setIsOpen(!isOpen)} className="bg-brand-blue text-white w-16 h-16 rounded-full shadow-xl hover:bg-brand-light-blue flex items-center justify-center transition mt-2" title="Opciones de Borrador">
-                <i className={`fas fa-pen-to-square transition-transform duration-300 ${isOpen ? 'rotate-45' : ''}`}></i>
-            </button>
-        </div>
-    );
-};
-
-
 // --- Componente Principal ---
 
 const App: React.FC = () => {
     const [formData, setFormData] = useState<FormData>(initialFormData);
     const [isDownloading, setIsDownloading] = useState(false);
     const [isUploading, setIsUploading] = useState(false);
+    const [isDraftLoading, setIsDraftLoading] = useState(false);
     const [statusMessage, setStatusMessage] = useState('');
     const [activeTab, setActiveTab] = useState('minister');
+    const [isFabMenuOpen, setIsFabMenuOpen] = useState(false);
+    const [draftId, setDraftId] = useState<string | null>(null);
+    const [draftSaveStatus, setDraftSaveStatus] = useState<{ message: string; timestamp: string | null }>({ message: '', timestamp: null });
+
+    useEffect(() => {
+        // Generar o recuperar el ID de borrador único del usuario
+        let id = localStorage.getItem('ministerialDraftId');
+        if (!id) {
+            id = crypto.randomUUID();
+            localStorage.setItem('ministerialDraftId', id);
+        }
+        setDraftId(id);
+    }, []);
 
     const handlePersonChange = useCallback((personKey: 'minister' | 'wife') => (e: React.ChangeEvent<HTMLInputElement>) => {
         const { name, value } = e.target;
@@ -235,34 +240,68 @@ const App: React.FC = () => {
         setFormData(prev => ({ ...prev, churchRecords: newRecords }));
     }, [formData.churchRecordsCount, formData.churchRecords]);
 
-    const handleSaveDraft = () => {
+    const handleSaveDraft = async () => {
+        if (!draftId) {
+            alert('No se pudo generar un ID para el borrador. Intente recargar la página.');
+            return;
+        }
+        setIsDraftLoading(true);
         try {
             const draftData = JSON.parse(JSON.stringify(formData));
+            // No guardamos las fotos en el JSON, solo las vistas previas.
             delete draftData.minister.photo;
             delete draftData.wife.photo;
-            localStorage.setItem('ministerialFormDraft', JSON.stringify(draftData));
-            alert('Borrador guardado exitosamente.');
+            
+            const { error } = await saveDraftToSupabase(draftId, draftData);
+            if (error) throw error;
+            
+            const now = new Date();
+            setDraftSaveStatus({ 
+                message: 'Borrador guardado exitosamente en la nube',
+                timestamp: now.toLocaleString('es-ES', { day: '2-digit', month: 'long', year: 'numeric', hour: '2-digit', minute: '2-digit' })
+            });
+
+            setIsFabMenuOpen(false);
         } catch (error) {
             console.error(error);
-            alert('No se pudo guardar el borrador.');
+            alert(`No se pudo guardar el borrador en la nube: ${error instanceof Error ? error.message : 'Error desconocido'}`);
+            setDraftSaveStatus({ message: 'Error al guardar el borrador.', timestamp: null });
+        } finally {
+            setIsDraftLoading(false);
         }
     };
 
-    const handleLoadDraft = () => {
-        const draft = localStorage.getItem('ministerialFormDraft');
-        if (draft) {
-            try {
-                const parsedDraft = JSON.parse(draft);
-                parsedDraft.minister.photo = null;
-                parsedDraft.wife.photo = null;
-                setFormData(parsedDraft);
-                alert('Borrador cargado. Recuerda volver a seleccionar las fotos si es necesario.');
-            } catch(error) {
-                console.error(error);
-                alert('El borrador guardado parece estar corrupto.');
+    const handleLoadDraft = async () => {
+        if (!draftId) {
+            alert('No se pudo encontrar un ID de borrador. Intente recargar la página.');
+            return;
+        }
+        setIsDraftLoading(true);
+        try {
+            const { data, error } = await loadDraftFromSupabase(draftId);
+            if (error) throw error;
+
+            if (data) {
+                // Restauramos el borrador pero reseteamos las fotos.
+                data.minister.photo = null;
+                data.wife.photo = null;
+                setFormData(data);
+                alert('Borrador cargado desde la nube. Recuerda volver a seleccionar las fotos si es necesario.');
+                setDraftSaveStatus({ 
+                    message: 'Borrador cargado desde la nube',
+                    timestamp: new Date().toLocaleString('es-ES', { day: '2-digit', month: 'long', year: 'numeric', hour: '2-digit', minute: '2-digit' })
+                });
+                setIsFabMenuOpen(false);
+            } else {
+                alert('No se encontró ningún borrador en la nube para este dispositivo.');
+                 setDraftSaveStatus({ message: 'No se encontró un borrador remoto.', timestamp: null });
             }
-        } else {
-            alert('No se encontró ningún borrador.');
+        } catch(error) {
+            console.error(error);
+            alert(`Error al cargar el borrador: ${error instanceof Error ? error.message : 'Error desconocido'}`);
+            setDraftSaveStatus({ message: 'Error al cargar el borrador.', timestamp: null });
+        } finally {
+            setIsDraftLoading(false);
         }
     };
 
@@ -277,7 +316,6 @@ const App: React.FC = () => {
         try {
             const filenameBase = formData.minister.fullName.replace(/\s+/g, '_');
             
-            // Generar y descargar PDF
             const pdfBlob = await generatePdf(formData);
             const pdfUrl = URL.createObjectURL(pdfBlob);
             const pdfLink = document.createElement('a');
@@ -288,7 +326,6 @@ const App: React.FC = () => {
             document.body.removeChild(pdfLink);
             URL.revokeObjectURL(pdfUrl);
 
-            // Generar y descargar Excel
             const excelBlob = generateExcel(formData);
             const excelUrl = URL.createObjectURL(excelBlob);
             const excelLink = document.createElement('a');
@@ -373,6 +410,7 @@ const App: React.FC = () => {
             case 'ministry':
                  return (
                     <div>
+                        <h2 className="text-2xl font-bold text-gray-800 border-b pb-2 mb-4">Información del Ministerio</h2>
                         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                             <InputField label="Fecha de Obrero Evangelista" name="evangelistWorkerDate" value={formData.ministry.evangelistWorkerDate} onChange={handleNestedChange('ministry')} />
                             <InputField label="Fecha de Diacono Evangelista" name="evangelistDeaconDate" value={formData.ministry.evangelistDeaconDate} onChange={handleNestedChange('ministry')} />
@@ -399,13 +437,14 @@ const App: React.FC = () => {
             case 'discipline':
                 return (
                     <div>
+                         <h2 className="text-2xl font-bold text-gray-800 border-b pb-2 mb-4">Disciplina Ministerial</h2>
                          <RadioGroup label="Ha sido puesto en diciplina alguna vez" name="wasDisciplined" value={formData.discipline.wasDisciplined} onChange={handleNestedChange('discipline')} options={['Sí', 'No']} />
                          {formData.discipline.wasDisciplined === 'Sí' && (
                             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-4">
                                 <InputField label="En que Fecha" name="disciplineDate" value={formData.discipline.disciplineDate} onChange={handleNestedChange('discipline')} />
                                 <InputField label="Tipo de Falta Cometida" name="faultType" value={formData.discipline.faultType} onChange={handleNestedChange('discipline')} />
                                 <InputField label="Pastor que Juzgo la Falta" name="judgingPastor" value={formData.discipline.judgingPastor} onChange={handleNestedChange('discipline')} />
-                                <RadioGroup label="Salió culpable o inocente" name="guilty" value={formData.discipline.guilty} onChange={handleNestedChange('discipline')} options={['Culpable', 'Innocente']} />
+                                <RadioGroup label="Salió culpable o inocente" name="guilty" value={formData.discipline.guilty} onChange={handleNestedChange('discipline')} options={['Culpable', 'Inocente']} />
                                 <RadioGroup label="Hubo testigos en el juicio" name="witnesses" value={formData.discipline.witnesses} onChange={handleNestedChange('discipline')} options={['Sí', 'No']} />
                                 <RadioGroup label="Fue recogido o suspendido" name="suspended" value={formData.discipline.suspended} onChange={handleNestedChange('discipline')} options={['Sí', 'No']} />
                                 <InputField label="Por cuanto tiempo" name="suspensionTime" value={formData.discipline.suspensionTime} onChange={handleNestedChange('discipline')} />
@@ -418,6 +457,7 @@ const App: React.FC = () => {
             case 'children':
                 return (
                     <div>
+                        <h2 className="text-2xl font-bold text-gray-800 border-b pb-2 mb-4">Información de los Hijos</h2>
                         <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
                             <InputField label="¿Cuántos Hijos Tiene?" name="childrenCount" value={formData.childrenCount} onChange={handleSimpleChange} type="number" />
                             <InputField label="Varones" name="maleChildrenCount" value={formData.maleChildrenCount} onChange={handleSimpleChange} type="number" />
@@ -459,6 +499,7 @@ const App: React.FC = () => {
             case 'records':
                 return (
                     <div>
+                        <h2 className="text-2xl font-bold text-gray-800 border-b pb-2 mb-4">Récord Ministerial</h2>
                         <InputField label="¿En cuántas iglesias ha estado?" name="churchRecordsCount" value={formData.churchRecordsCount} onChange={handleSimpleChange} type="number" />
                         {formData.churchRecords.map((record, index) => (
                             <div key={record.id} className="p-4 border-t mt-4">
@@ -514,38 +555,62 @@ const App: React.FC = () => {
     }
     
     return (
-        <div className="max-w-5xl mx-auto p-4 sm:p-8 font-sans">
+        <div className="max-w-5xl mx-auto p-4 sm:p-8 font-sans" onClick={() => { if(isFabMenuOpen) setIsFabMenuOpen(false); }}>
              <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" />
-            <div className="bg-brand-blue text-white p-6 rounded-lg shadow-xl mb-8">
+            
+            {draftSaveStatus.timestamp && (
+                <div className="bg-green-100 border-l-4 border-green-500 text-green-700 p-4 rounded-lg mb-6 shadow-md" role="alert">
+                    <p className="font-bold">{draftSaveStatus.message}</p>
+                    <p>Último guardado: {draftSaveStatus.timestamp}</p>
+                </div>
+            )}
+
+            <div className="bg-gradient-to-br from-indigo-500 to-purple-600 text-white p-8 rounded-xl shadow-2xl mb-8">
                 <header className="text-center">
-                    <h1 className="text-3xl sm:text-4xl font-bold">Ficha Ministerial Digital</h1>
-                    <p className="text-blue-200 mt-2">Complete todos los campos requeridos con información precisa.</p>
+                    <h1 className="text-4xl sm:text-5xl font-extrabold tracking-tight">Ficha Ministerial Digital</h1>
+                    <p className="text-indigo-200 mt-2 text-lg">Edición 2025</p>
                 </header>
+                {/* Botones de Borrador para pantallas grandes */}
+                <div className="mt-6 hidden sm:flex flex-row justify-center gap-4">
+                    <button 
+                        type="button" 
+                        onClick={handleSaveDraft} 
+                        disabled={isUploading || isDownloading || isDraftLoading} 
+                        className="bg-white/20 text-white font-semibold py-2 px-6 rounded-lg hover:bg-white/30 transition duration-300 disabled:opacity-50 flex items-center justify-center"
+                    >
+                        {isDraftLoading && draftId ? <><i className="fas fa-spinner fa-spin mr-2"></i>Guardando...</> : <><i className="fas fa-cloud-upload-alt mr-2"></i> Guardar Borrador</>}
+                    </button>
+                    <button 
+                        type="button" 
+                        onClick={handleLoadDraft} 
+                        disabled={isUploading || isDownloading || isDraftLoading} 
+                        className="bg-white/20 text-white font-semibold py-2 px-6 rounded-lg hover:bg-white/30 transition duration-300 disabled:opacity-50 flex items-center justify-center"
+                    >
+                       {isDraftLoading ? <><i className="fas fa-spinner fa-spin mr-2"></i>Cargando...</> : <><i className="fas fa-cloud-download-alt mr-2"></i> Cargar Borrador</>}
+                    </button>
+                </div>
             </div>
 
             <form onSubmit={handleUpload}>
-                <div className="bg-brand-blue rounded-t-lg shadow-lg">
-                    <nav className="flex flex-wrap p-1">
+                 <div className="bg-white p-4 sm:p-8 rounded-xl shadow-lg mb-6">
+                    <nav className="flex flex-wrap gap-2 mb-8 p-2 bg-gray-100 rounded-xl">
                         <TabButton title="Ministro" isActive={activeTab === 'minister'} onClick={() => setActiveTab('minister')} icon="fa-user-tie"/>
                         <TabButton title="Esposa" isActive={activeTab === 'wife'} onClick={() => setActiveTab('wife')} icon="fa-user-group"/>
+                        <TabButton title="Hijos" isActive={activeTab === 'children'} onClick={() => setActiveTab('children')} icon="fa-children"/>
                         <TabButton title="Ministerio" isActive={activeTab === 'ministry'} onClick={() => setActiveTab('ministry')} icon="fa-scroll"/>
                         <TabButton title="Disciplina" isActive={activeTab === 'discipline'} onClick={() => setActiveTab('discipline')} icon="fa-gavel"/>
-                        <TabButton title="Hijos" isActive={activeTab === 'children'} onClick={() => setActiveTab('children')} icon="fa-children"/>
                         <TabButton title="Récord" isActive={activeTab === 'records'} onClick={() => setActiveTab('records')} icon="fa-landmark"/>
                     </nav>
-                </div>
-                
-                <div className="bg-white p-4 sm:p-6 rounded-b-lg shadow-md mb-6">
                     {renderContent()}
                 </div>
 
-                <div className="bg-white p-6 rounded-lg shadow-md mt-6 space-y-4">
+                <div className="bg-white p-6 rounded-xl shadow-lg mt-6 space-y-4">
                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                        <button type="button" onClick={handleDownload} disabled={isDownloading || isUploading} className="w-full bg-brand-blue text-white font-bold py-3 px-4 rounded-lg hover:bg-brand-light-blue transition duration-300 disabled:bg-blue-300 flex items-center justify-center">
+                        <button type="button" onClick={handleDownload} disabled={isDownloading || isUploading} className="w-full bg-indigo-600 text-white font-bold py-3 px-4 rounded-lg hover:bg-indigo-700 transition duration-300 disabled:bg-indigo-300 flex items-center justify-center shadow-md">
                            {isDownloading ? <><i className="fas fa-spinner fa-spin mr-2"></i>Generando...</> : <><i className="fas fa-download mr-2"></i>Descargar (PDF/Excel)</>}
                         </button>
-                        <button type="submit" disabled={isUploading || isDownloading} className="w-full bg-green-600 text-white font-bold py-3 px-4 rounded-lg hover:bg-green-700 transition duration-300 disabled:bg-green-400 flex items-center justify-center">
-                           {isUploading ? <><i className="fas fa-spinner fa-spin mr-2"></i>Enviando...</> : <><i className="fas fa-cloud-upload-alt mr-2"></i>Enviar a Supabase</>}
+                        <button type="submit" disabled={isUploading || isDownloading} className="w-full bg-green-600 text-white font-bold py-3 px-4 rounded-lg hover:bg-green-700 transition duration-300 disabled:bg-green-400 flex items-center justify-center shadow-md">
+                           {isUploading ? <><i className="fas fa-spinner fa-spin mr-2"></i>Enviando...</> : <><i className="fas fa-paper-plane mr-2"></i>Enviar Información</>}
                         </button>
                     </div>
                     {(isUploading || isDownloading) && <div className="w-full bg-blue-100 p-3 rounded-md text-center text-blue-800">
@@ -554,7 +619,29 @@ const App: React.FC = () => {
                     </div>}
                 </div>
             </form>
-            <FloatingDraftButtons onSave={handleSaveDraft} onLoad={handleLoadDraft} disabled={isUploading || isDownloading} />
+
+            {/* Botón Flotante (FAB) para pantallas pequeñas */}
+            <div className="sm:hidden fixed bottom-6 right-6 z-50">
+                <div className="relative">
+                    {/* Botones de acción del FAB */}
+                    <div className={`absolute bottom-16 right-0 flex flex-col items-center gap-2 transition-all duration-300 ${isFabMenuOpen ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-4 pointer-events-none'}`}>
+                        <button type="button" onClick={handleLoadDraft} disabled={isDraftLoading} className="bg-white text-indigo-600 rounded-full p-3 shadow-lg flex items-center justify-center w-40 text-sm font-semibold disabled:opacity-50">
+                            {isDraftLoading ? <><i className="fas fa-spinner fa-spin mr-2"></i>Cargando...</> : <><i className="fas fa-cloud-download-alt mr-2"></i> Cargar Borrador</>}
+                        </button>
+                         <button type="button" onClick={handleSaveDraft} disabled={isDraftLoading} className="bg-white text-indigo-600 rounded-full p-3 shadow-lg flex items-center justify-center w-40 text-sm font-semibold disabled:opacity-50">
+                             {isDraftLoading ? <><i className="fas fa-spinner fa-spin mr-2"></i>Guardando...</> : <><i className="fas fa-cloud-upload-alt mr-2"></i> Guardar Borrador</>}
+                        </button>
+                    </div>
+                    {/* Botón principal del FAB */}
+                    <button
+                        type="button"
+                        onClick={(e) => { e.stopPropagation(); setIsFabMenuOpen(!isFabMenuOpen); }}
+                        className="w-16 h-16 bg-gradient-to-r from-purple-600 to-indigo-600 text-white rounded-full flex items-center justify-center shadow-xl text-2xl transition-transform duration-300 hover:scale-110"
+                    >
+                       <i className={`fas transition-transform duration-300 ${isFabMenuOpen ? 'fa-times rotate-90' : 'fa-plus'}`}></i>
+                    </button>
+                </div>
+            </div>
         </div>
     );
 };
