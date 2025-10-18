@@ -1,0 +1,5 @@
+{
+  "name": "Ficha Ministerial Digital",
+  "description": "Una aplicación para completar, generar y guardar digitalmente la Ficha Ministerial 2025. Permite guardar borradores, cargar fotos y exportar a PDF y Excel, con integración a Supabase.",
+  "requestFramePermissions": []
+}
