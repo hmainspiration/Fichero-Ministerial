@@ -4,6 +4,8 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Ficha Ministerial Digital</title>
+    <link rel="manifest" href="/manifest.json">
+    <meta name="theme-color" content="#4f46e5">
     <script src="https://cdn.tailwindcss.com"></script>
     <script>
       tailwind.config = {
@@ -47,7 +49,9 @@
     "jspdf": "https://aistudiocdn.com/jspdf@^3.0.3",
     "xlsx": "https://aistudiocdn.com/xlsx@^0.18.5",
     "jspdf-autotable": "https://aistudiocdn.com/jspdf-autotable@^5.0.2",
-    "@supabase/supabase-js": "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm"
+    "@supabase/supabase-js": "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm",
+    "idb": "https://cdn.jsdelivr.net/npm/idb@7/+esm",
+    "webworker": "https://aistudiocdn.com/webworker@^0.8.4"
   }
 }
 </script>
@@ -55,5 +59,18 @@
 <body class="bg-brand-gray">
     <div id="root"></div>
     <script type="module" src="/index.tsx"></script>
+    <script>
+      if ('serviceWorker' in navigator) {
+        window.addEventListener('load', () => {
+          navigator.serviceWorker.register('/service-worker.ts', { type: 'module' })
+            .then(registration => {
+              console.log('ServiceWorker registration successful with scope: ', registration.scope);
+            })
+            .catch(error => {
+              console.log('ServiceWorker registration failed: ', error);
+            });
+        });
+      }
+    </script>
 </body>
 </html>

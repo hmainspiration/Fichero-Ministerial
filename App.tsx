@@ -1,7 +1,7 @@
 import React, { useState, useCallback, useEffect, useRef, createContext, useContext, useMemo } from 'react';
-import type { FormData, PersonInfo, ChildInfo, ChurchRecord, MinistryInfo, DisciplineInfo } from './types';
+import type { FormData, PersonInfo, ChildInfo, ChurchRecord } from './types';
 import { initialFormData, createInitialChild, createInitialChurchRecord, MAX_PHOTO_SIZE_MB, MAX_PHOTO_SIZE_BYTES } from './constants';
-import { uploadFile, saveDraftToSupabase, loadDraftFromSupabase } from './services/supabase';
+import { saveDraftToDB, loadDraftFromDB, addSubmissionToSyncQueue, hasPendingSubmissions } from './services/db';
 import { generatePdf, generateExcel } from './services/fileGenerators';
 
 // --- Sistema de Notificaciones Toast ---
@@ -327,6 +327,21 @@ const PersonDetails: React.FC<{ person: PersonInfo; onChange: (e: React.ChangeEv
     </div>
 );
 
+const OfflineIndicator: React.FC<{ isOnline: boolean; hasPending: boolean }> = ({ isOnline, hasPending }) => {
+    if (isOnline && !hasPending) return null;
+
+    const bgColor = isOnline ? 'bg-blue-500' : 'bg-yellow-500';
+    const icon = isOnline ? 'fa-sync fa-spin' : 'fa-wifi-slash';
+    const text = isOnline ? 'Sincronizando datos pendientes...' : 'Modo Offline: Los cambios se guardan localmente.';
+
+    return (
+        <div className={`fixed top-0 left-0 right-0 p-2 text-center text-white text-sm ${bgColor} z-50`}>
+            <i className={`fas ${icon} mr-2`}></i>
+            {text}
+        </div>
+    );
+};
+
 
 // --- Lógica Principal de la Aplicación ---
 
@@ -339,7 +354,24 @@ const AppContent: React.FC = () => {
     const [draftId, setDraftId] = useState<string | null>(null);
     const { addToast } = useToast();
     const [formErrors, setFormErrors] = useState<any>({});
+    const [isOnline, setIsOnline] = useState(navigator.onLine);
+    const [hasPending, setHasPending] = useState(false);
 
+    useEffect(() => {
+        const updateOnlineStatus = () => setIsOnline(navigator.onLine);
+        window.addEventListener('online', updateOnlineStatus);
+        window.addEventListener('offline', updateOnlineStatus);
+
+        const checkPending = async () => setHasPending(await hasPendingSubmissions());
+        checkPending();
+        const intervalId = setInterval(checkPending, 5000); // Check every 5s
+
+        return () => {
+            window.removeEventListener('online', updateOnlineStatus);
+            window.removeEventListener('offline', updateOnlineStatus);
+            clearInterval(intervalId);
+        };
+    }, []);
 
     useEffect(() => {
         let id = localStorage.getItem('ministerialDraftId');
@@ -348,6 +380,8 @@ const AppContent: React.FC = () => {
             localStorage.setItem('ministerialDraftId', id);
         }
         setDraftId(id);
+        // Cargar el borrador local al iniciar
+        handleLoadDraft();
     }, []);
 
     const handlePersonChange = useCallback((personKey: 'minister' | 'wife') => (e: React.ChangeEvent<HTMLInputElement> | { target: { name: string; value: string; } }) => {
@@ -404,9 +438,6 @@ const AppContent: React.FC = () => {
     }, [formData.churchRecordsCount, formData.churchRecords]);
 
     const validateForm = (): boolean => {
-        // La validación de fechas ya no es necesaria aquí,
-        // ya que el DateDropdownPicker previene fechas inválidas.
-        // Se pueden agregar otras validaciones si es necesario.
         if (!formData.minister.fullName) {
              addToast('El nombre completo del ministro es obligatorio.', 'error');
              setActiveTab('minister');
@@ -416,62 +447,42 @@ const AppContent: React.FC = () => {
     };
 
     const handleSaveDraft = async () => {
-        if (!draftId) {
-            addToast('No se pudo generar un ID para el borrador. Intente recargar la página.', 'error');
-            return;
-        }
+        if (!draftId) return;
         setIsDraftLoading(true);
         try {
-            const draftData = JSON.parse(JSON.stringify(formData));
-            delete draftData.minister.photo;
-            delete draftData.wife.photo;
-            
-            const { error } = await saveDraftToSupabase(draftId, draftData);
-            if (error) throw error;
-            
-            addToast('Borrador guardado exitosamente en la nube', 'success');
+            await saveDraftToDB(draftId, formData);
+            addToast('Borrador guardado localmente.', 'success');
             setIsFabMenuOpen(false);
         } catch (error) {
-            const message = `No se pudo guardar el borrador: ${error instanceof Error ? error.message : 'Error desconocido'}`;
-            addToast(message, 'error');
+            addToast(`No se pudo guardar el borrador localmente: ${error instanceof Error ? error.message : 'Error desconocido'}`, 'error');
         } finally {
             setIsDraftLoading(false);
         }
     };
 
     const handleLoadDraft = async () => {
-        if (!draftId) {
-            addToast('No se pudo encontrar un ID de borrador. Intente recargar la página.', 'error');
-            return;
-        }
+        if (!draftId) return;
         setIsDraftLoading(true);
         try {
-            const { data, error } = await loadDraftFromSupabase(draftId);
-            if (error) throw error;
-
+            const data = await loadDraftFromDB(draftId);
             if (data) {
-                data.minister.photo = null;
-                data.wife.photo = null;
                 setFormData(data);
-                addToast('Borrador cargado desde la nube. Recuerda volver a seleccionar las fotos.', 'success');
-                setIsFabMenuOpen(false);
+                addToast('Borrador local cargado exitosamente.', 'success');
             } else {
-                addToast('No se encontró ningún borrador en la nube para este dispositivo.', 'info');
+                addToast('No se encontró borrador local. Creando uno nuevo.', 'info');
             }
         } catch(error) {
-            addToast(`Error al cargar el borrador: ${error instanceof Error ? error.message : 'Error desconocido'}`, 'error');
+            addToast(`Error al cargar el borrador local: ${error instanceof Error ? error.message : 'Error desconocido'}`, 'error');
         } finally {
             setIsDraftLoading(false);
         }
     };
 
     const handleAction = async (action: 'download' | 'upload') => {
-        if (!validateForm()) {
-            return;
-        }
+        if (!validateForm()) return;
         setIsProcessing(true);
         try {
-            const filenameBase = formData.minister.fullName.replace(/\s+/g, '_');
+            const filenameBase = formData.minister.fullName.replace(/\s+/g, '_') || 'ficha_ministerial';
             const pdfBlob = await generatePdf(formData);
             const excelBlob = generateExcel(formData);
 
@@ -495,28 +506,26 @@ const AppContent: React.FC = () => {
                 URL.revokeObjectURL(excelUrl);
                 addToast('Documentos descargados exitosamente.', 'success');
             } else { // upload
-                const pdfFile = new File([pdfBlob], `${filenameBase}.pdf`, { type: 'application/pdf' });
-                const excelFile = new File([excelBlob], `${filenameBase}.xlsx`, { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
-    
-                const uploads = [
-                    uploadFile(pdfFile, `documents/${pdfFile.name}`),
-                    uploadFile(excelFile, `documents/${excelFile.name}`)
-                ];
-                if (formData.minister.photo) uploads.push(uploadFile(formData.minister.photo, `photos/minister_${filenameBase}.jpg`));
-                if (formData.wife.photo) uploads.push(uploadFile(formData.wife.photo, `photos/wife_${filenameBase}.jpg`));
-    
-                const results = await Promise.all(uploads);
-                const firstErrorResult = results.find(r => r.error);
-                if (firstErrorResult?.error) throw firstErrorResult.error;
-                
-                addToast('¡Ficha Ministerial enviada y guardada exitosamente!', 'success');
+                await addSubmissionToSyncQueue({
+                    formData,
+                    pdfBlob,
+                    excelBlob,
+                    filenameBase
+                });
+
+                if ('serviceWorker' in navigator && 'SyncManager' in window) {
+                    navigator.serviceWorker.ready.then(sw => {
+                        // FIX: Cast sw to any to access the 'sync' property, which is not in the default TS lib definition.
+                        (sw as any).sync.register('sync-submissions');
+                    });
+                }
+
+                addToast('Ficha guardada. Se enviará cuando haya conexión.', 'success');
+                // Opcional: limpiar formulario después de enviar a la cola
+                // setFormData(initialFormData);
             }
         } catch (error: any) {
-            let toastMessage = `Ocurrió un error: ${error.message || 'Error desconocido'}`;
-            if (action === 'upload' && error.message?.includes('violates row-level security policy')) {
-                toastMessage = 'Error de Permisos: No se pudo subir los archivos. Contacte al administrador.';
-            }
-            addToast(toastMessage, 'error');
+            addToast(`Ocurrió un error: ${error.message || 'Error desconocido'}`, 'error');
         } finally {
             setIsProcessing(false);
         }
@@ -678,8 +687,9 @@ const AppContent: React.FC = () => {
     return (
         <div className="max-w-5xl mx-auto p-4 sm:p-8 font-sans" onClick={() => { if(isFabMenuOpen) setIsFabMenuOpen(false); }}>
              <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" />
+             <OfflineIndicator isOnline={isOnline} hasPending={hasPending} />
 
-            <div className="bg-gradient-to-br from-indigo-500 to-purple-600 text-white p-8 rounded-xl shadow-2xl mb-8">
+            <div className={`bg-gradient-to-br from-indigo-500 to-purple-600 text-white p-8 rounded-xl shadow-2xl mb-8 ${isOnline ? '' : 'mt-8'}`}>
                 <header className="text-center">
                     <h1 className="text-4xl sm:text-5xl font-extrabold tracking-tight">Ficha Ministerial Digital</h1>
                     <p className="text-indigo-200 mt-2 text-lg">Edición 2025</p>
@@ -691,7 +701,7 @@ const AppContent: React.FC = () => {
                         disabled={isProcessing || isDraftLoading} 
                         className="bg-white/20 text-white font-semibold py-2 px-6 rounded-lg hover:bg-white/30 transition duration-300 disabled:opacity-50 flex items-center justify-center"
                     >
-                        {isDraftLoading ? <><i className="fas fa-spinner fa-spin mr-2"></i>Guardando...</> : <><i className="fas fa-cloud-upload-alt mr-2"></i> Guardar Borrador</>}
+                        {isDraftLoading ? <><i className="fas fa-spinner fa-spin mr-2"></i>Guardando...</> : <><i className="fas fa-save mr-2"></i> Guardar Borrador</>}
                     </button>
                     <button 
                         type="button" 
@@ -699,7 +709,7 @@ const AppContent: React.FC = () => {
                         disabled={isProcessing || isDraftLoading} 
                         className="bg-white/20 text-white font-semibold py-2 px-6 rounded-lg hover:bg-white/30 transition duration-300 disabled:opacity-50 flex items-center justify-center"
                     >
-                       {isDraftLoading ? <><i className="fas fa-spinner fa-spin mr-2"></i>Cargando...</> : <><i className="fas fa-cloud-download-alt mr-2"></i> Cargar Borrador</>}
+                       {isDraftLoading ? <><i className="fas fa-spinner fa-spin mr-2"></i>Cargando...</> : <><i className="fas fa-folder-open mr-2"></i> Cargar Borrador</>}
                     </button>
                 </div>
             </div>
@@ -723,7 +733,7 @@ const AppContent: React.FC = () => {
                            {isProcessing ? <><i className="fas fa-spinner fa-spin mr-2"></i>Procesando...</> : <><i className="fas fa-download mr-2"></i>Descargar (PDF/Excel)</>}
                         </button>
                         <button type="submit" disabled={isProcessing} className="w-full bg-green-600 text-white font-bold py-3 px-4 rounded-lg hover:bg-green-700 transition duration-300 disabled:bg-green-400 flex items-center justify-center shadow-md">
-                           {isProcessing ? <><i className="fas fa-spinner fa-spin mr-2"></i>Enviando...</> : <><i className="fas fa-paper-plane mr-2"></i>Enviar Información</>}
+                           {isProcessing ? <><i className="fas fa-spinner fa-spin mr-2"></i>Procesando...</> : <><i className="fas fa-paper-plane mr-2"></i>Enviar Información</>}
                         </button>
                     </div>
                 </div>
@@ -733,10 +743,10 @@ const AppContent: React.FC = () => {
                 <div className="relative">
                     <div className={`absolute bottom-16 right-0 flex flex-col items-center gap-2 transition-all duration-300 ${isFabMenuOpen ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-4 pointer-events-none'}`}>
                         <button type="button" onClick={handleLoadDraft} disabled={isDraftLoading} className="bg-white text-indigo-600 rounded-full p-3 shadow-lg flex items-center justify-center w-40 text-sm font-semibold disabled:opacity-50">
-                            {isDraftLoading ? <><i className="fas fa-spinner fa-spin mr-2"></i>Cargando...</> : <><i className="fas fa-cloud-download-alt mr-2"></i> Cargar Borrador</>}
+                            {isDraftLoading ? <><i className="fas fa-spinner fa-spin mr-2"></i>Cargando...</> : <><i className="fas fa-folder-open mr-2"></i> Cargar</>}
                         </button>
                          <button type="button" onClick={handleSaveDraft} disabled={isDraftLoading} className="bg-white text-indigo-600 rounded-full p-3 shadow-lg flex items-center justify-center w-40 text-sm font-semibold disabled:opacity-50">
-                             {isDraftLoading ? <><i className="fas fa-spinner fa-spin mr-2"></i>Guardando...</> : <><i className="fas fa-cloud-upload-alt mr-2"></i> Guardar Borrador</>}
+                             {isDraftLoading ? <><i className="fas fa-spinner fa-spin mr-2"></i>Guardando...</> : <><i className="fas fa-save mr-2"></i> Guardar</>}
                         </button>
                     </div>
                     <button

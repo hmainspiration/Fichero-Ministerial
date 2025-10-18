@@ -14,7 +14,9 @@
     "jspdf": "^3.0.3",
     "xlsx": "^0.18.5",
     "jspdf-autotable": "^5.0.2",
-    "@supabase/supabase-js": "2"
+    "@supabase/supabase-js": "2",
+    "idb": "7",
+    "webworker": "^0.8.4"
   },
   "devDependencies": {
     "@types/node": "^22.14.0",
